@@ -583,7 +583,7 @@ function stopSending() {
 }
 
 async function streamTo(dc) {
-  // Espera confirmación del receptor antes de empezar
+  // Espera confirmación del receptor antes de empezar (con respaldo por tiempo)
   await waitReady(dc);
   if (sendCancel || dc.closed) return;
 
@@ -624,23 +624,27 @@ function waitReady(dc) {
     }
     dc.on('data', onData);
     dc.on('close', finish);
-    setTimeout(finish, 8000);
+    setTimeout(finish, 2500);
   });
 }
 
+// NO usamos el callback de send(): con WebRTC puede no dispararse nunca
+// y la transferencia se queda congelada en el primer bloque.
+// En su lugar controlamos el flujo con bufferedAmount.
 function sendRaw(dc, data) {
-  return new Promise((res, rej) => {
+  return new Promise(res => {
     try {
-      dc.send(data, err => (err ? rej(err) : res()));
+      dc.send(data);
     } catch (e) {
-      rej(e);
+      console.error('send fallo:', e);
     }
+    res();
   });
 }
 
 async function drain(dc) {
   let guard = 0;
-  while (dc.bufferedAmount > HIGH_WATER && guard++ < 2000) await sleep(30);
+  while (dc.bufferedAmount > 0 && guard++ < 10000) await sleep(10);
 }
 
 // Diagnóstico del estado real de la conexión ICE
@@ -770,6 +774,8 @@ function connectReceiver() {
     dc.on('open', () => {
       ok = true;
       setStatus($('recvStatus'), 'Conectado. Esperando archivos…', 'wait');
+      // Confirmación inmediata: desbloquea al emisor sin esperar a la cabecera
+      try { dc.send(JSON.stringify({ type: 'ready' })); } catch (e) {}
     });
     dc.on('data', data => handleData(data, dc));
     dc.on('error', () => setStatus($('recvStatus'), 'No se pudo conectar con ese código', 'err'));
@@ -803,7 +809,7 @@ function handleData(data, dc) {
     if (msg.type === 'meta') {
       current = { name: msg.name, mime: msg.mime, size: msg.size, chunks: [], received: 0 };
       renderRecv();
-      // Confirmación: el emisor espera esto antes de enviar los datos
+      // Confirmación (por si el emisor aún no la recibió al abrir)
       try { dc.send(JSON.stringify({ type: 'ready' })); } catch (e) {}
       armWatchdog();
     } else if (msg.type === 'end') {
