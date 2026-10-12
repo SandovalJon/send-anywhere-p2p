@@ -407,17 +407,6 @@ function saveCustomTurn() {
   else localStorage.removeItem(TURN_KEY);
 }
 
-['turnUrl', 'turnUser', 'turnPass'].forEach(id => {
-  $(id).addEventListener('change', saveCustomTurn);
-});
-
-(function initTurnFields() {
-  const t = loadCustomTurn();
-  $('turnUrl').value = t.url || '';
-  $('turnUser').value = t.user || '';
-  $('turnPass').value = t.pass || '';
-})();
-
 let peer = null;
 let sendCode = null;
 let selectedFiles = [];
@@ -716,6 +705,17 @@ function copy(text, msg) {
     ta.remove();
   }
 }
+
+/* ---------- Configuración TURN ---------- */
+['turnUrl', 'turnUser', 'turnPass'].forEach(id => {
+  $(id).addEventListener('change', saveCustomTurn);
+});
+(function initTurnFields() {
+  const t = loadCustomTurn();
+  $('turnUrl').value = t.url || '';
+  $('turnUser').value = t.user || '';
+  $('turnPass').value = t.pass || '';
+})();
 
 /* ---------- Recepción ---------- */
 $('connectBtn').addEventListener('click', connectReceiver);
