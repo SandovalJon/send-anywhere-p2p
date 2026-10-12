@@ -315,6 +315,17 @@
 const CHUNK = 64 * 1024;
 const HIGH_WATER = 4 * 1024 * 1024;
 
+// STUN + TURN: sin TURN los dispositivos detrás de NAT estricto
+// (datos móviles, routers corporativos) no pueden conectarse entre sí.
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    { urls: 'turn:openrelay.metered.ca:80',  username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  ]
+};
+
 let peer = null;
 let sendCode = null;
 let selectedFiles = [];
@@ -425,7 +436,7 @@ function startSending() {
 
   const newCode = genCode();
   setStatus($('sendStatus'), 'Conectando al servidor de señalización…', '');
-  peer = new Peer(newCode, { debug: 0 });
+  peer = new Peer(newCode, { debug: 0, config: ICE_CONFIG });
 
   peer.on('open', id => {
     sendCode = id;
@@ -438,8 +449,26 @@ function startSending() {
 
   peer.on('connection', dc => {
     receivers.add(dc);
-    setStatus($('sendStatus'), ` receptor conectado. Enviando…`, '');
-    streamTo(dc);
+    setStatus($('sendStatus'), 'Receptor detectado. Estableciendo conexión segura…', 'wait');
+
+    // No enviar hasta que el canal de datos esté realmente abierto
+    let started = false;
+    const begin = () => {
+      if (started) return;
+      started = true;
+      setStatus($('sendStatus'), '1 receptor conectado. Enviando…', '');
+      streamTo(dc);
+    };
+    dc.on('open', begin);
+    watchIce(dc, () => {
+      if (!started) {
+        setStatus($('sendStatus'), 'No se pudo establecer la conexión directa. Prueba a estar en la misma red WiFi o regenera el código.', 'err');
+      }
+    });
+    setTimeout(() => {
+      if (!started) begin();
+    }, 8000);
+
     dc.on('close', () => {
       receivers.delete(dc);
       if (!receivers.size && !sendCancel) {
@@ -503,6 +532,20 @@ async function drain(dc) {
   while (dc.bufferedAmount > HIGH_WATER && guard++ < 2000) await sleep(30);
 }
 
+// Diagnóstico del estado de la conexión ICE real
+function watchIce(dc, onFail) {
+  const pc = dc.peerConnection;
+  if (!pc) return;
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'failed') onFail('failed');
+  };
+  setTimeout(() => {
+    if (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
+      onFail(pc.iceConnectionState);
+    }
+  }, 15000);
+}
+
 function renderQr() {
   const box = $('qr');
   box.innerHTML = '';
@@ -557,16 +600,27 @@ function connectReceiver() {
   if (recvPeer) { try { recvPeer.destroy(); } catch (e) {} }
 
   setStatus($('recvStatus'), `Buscando el código ${code}…`, 'wait');
-  recvPeer = new Peer({ debug: 0 });
+  recvPeer = new Peer({ debug: 0, config: ICE_CONFIG });
 
   recvPeer.on('open', () => {
     const dc = recvPeer.connect(code, { reliable: true, serialization: 'binary' });
-    dc.on('open', () => setStatus($('recvStatus'), 'Conectado. Esperando archivos…', 'wait'));
+    let ok = false;
+    dc.on('open', () => {
+      ok = true;
+      setStatus($('recvStatus'), 'Conectado. Esperando archivos…', 'wait');
+    });
     dc.on('data', data => handleData(data));
     dc.on('error', () => setStatus($('recvStatus'), 'No se pudo conectar con ese código', 'err'));
     dc.on('close', () => {
-      setStatus($('recvStatus'), 'El emisor cerró la conexión.', 'ok');
-      finishCurrent();
+      if (ok) {
+        setStatus($('recvStatus'), 'El emisor cerró la conexión.', 'ok');
+        finishCurrent();
+      }
+    });
+    watchIce(dc, () => {
+      if (!ok) {
+        setStatus($('recvStatus'), 'No se pudo establecer la conexión directa. Comprueba que el código sea correcto y que ambos estén en redes compatibles.', 'err');
+      }
     });
   });
 
