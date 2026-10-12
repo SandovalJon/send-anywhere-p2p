@@ -338,7 +338,7 @@
       <div class="progress" id="sendProgress"><div></div></div>
       <div class="progress-label" id="sendProgressLabel"><span></span><span></span></div>
 
-      <p class="note">El archivo viaja directo de tu dispositivo al del receptor (P2P) y no se almacena en ningún servidor. El código funciona mientras esta página esté abierta.</p>
+      <p class="note">El archivo viaja directo de tu dispositivo al del receptor (P2P) y no se almacena en ningún servidor. El código funciona mientras esta página esté abierta. Los archivos de texto (txt, csv, json, xml, código) se comprimen automáticamente para transferirlos más rápido; las fotos y vídeos van sin comprimir porque ya están comprimidos.</p>
     </div>
   </section>
 
@@ -510,6 +510,33 @@ $('generateBtn').addEventListener('click', () => {
   startSending();
 });
 
+// Compresión: solo tiene sentido en formatos NO comprimidos (texto, JSON, CSV...).
+// Las fotos JPG/PNG ya vienen comprimidas: comprimirlas otra vez no ahorra nada.
+function shouldCompress(file) {
+  if (typeof CompressionStream === 'undefined') return false;
+  if (file.size < 1024) return false;
+  const t = (file.type || '').toLowerCase();
+
+  if (/^(image|video|audio)\//.test(t)) return false;
+  if (/(zip|gzip|compressed|pdf|rar|7z|woff)/.test(t)) return false;
+
+  if (/^text\//.test(t)) return true;
+  if (/(json|xml|javascript|yaml|x-www-form-urlencoded)/.test(t)) return true;
+
+  return /\.(txt|md|csv|json|xml|ya?ml|log|sql|html?|css|[cm]?js|jsx|tsx?|py|java|[ch]|cs|go|rs|php|rb|sh|ini|toml|cfg|conf|ts|svg)$/i
+    .test(file.name);
+}
+
+// Divide un Uint8Array en trozos de tamaño máximo
+function splitBuffer(buf, size) {
+  if (buf.byteLength <= size) return [buf];
+  const parts = [];
+  for (let off = 0; off < buf.byteLength; off += size) {
+    parts.push(buf.slice(off, Math.min(off + size, buf.byteLength)));
+  }
+  return parts;
+}
+
 /* ---------- Envío (P2P) ---------- */
 function genCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
@@ -594,26 +621,27 @@ async function streamTo(dc) {
     for (const { file } of selectedFiles) {
       if (sendCancel || dc.closed) return;
       const mime = file.type || 'application/octet-stream';
-      await sendRaw(dc, JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime }));
-
-      let off = 0;
-      while (off < file.size) {
-        if (sendCancel || dc.closed) return;
-        const end = Math.min(off + chunkSize, file.size);
-        const buf = await file.slice(off, end).arrayBuffer();
-        try {
-          await sendRaw(dc, buf);
-        } catch (e) {
-          if (chunkSize > MIN_CHUNK) {
-            chunkSize = Math.floor(chunkSize / 2);
-            continue;
+      const zip = shouldCompress(file);
+      await sendRaw(dc, JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime, compressed: zip }));
+      if (zip) {
+        await sendCompressed(dc, file);
+      } else {
+        let off = 0;
+        while (off < file.size) {
+          if (sendCancel || dc.closed) return;
+          const end = Math.min(off + chunkSize, file.size);
+          const buf = await file.slice(off, end).arrayBuffer();
+          try {
+            await sendRaw(dc, buf);
+          } catch (e) {
+            if (chunkSize > MIN_CHUNK) { chunkSize = Math.floor(chunkSize / 2); continue; }
+            throw e;
           }
-          throw e;
+          off = end;
+          await drain(dc);
+          const pct = file.size ? (off / file.size) * 100 : 100;
+          setProgress('send', pct, file.name, pct.toFixed(0) + '% · ' + fmtSize(off));
         }
-        off = end;
-        await drain(dc);
-        const pct = file.size ? (off / file.size) * 100 : 100;
-        setProgress('send', pct, file.name, pct.toFixed(0) + '% · ' + fmtSize(off));
       }
       await sendRaw(dc, JSON.stringify({ type: 'end' }));
     }
@@ -624,6 +652,41 @@ async function streamTo(dc) {
     console.error('Error de envio:', err);
     setStatus($('sendStatus'), 'Error al enviar: ' + (err && err.message ? err.message : err), 'err');
   }
+}
+
+// Comprime y envía en paralelo: la lectura del compresor corre a la vez que
+// la escritura de la entrada, así no hay bloqueo por presión de búfer.
+async function sendCompressed(dc, file) {
+  const cs = new CompressionStream('gzip');
+  const writer = cs.writable.getWriter();
+  const reader = cs.readable.getReader();
+
+  const pump = (async () => {
+    let sent = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const part of splitBuffer(value, chunkSize)) {
+        await sendRaw(dc, part);
+        await drain(dc);
+      }
+      sent += value.byteLength;
+      if (sent > file.size) sent = file.size;
+      setProgress('send', (sent / file.size) * 100, file.name,
+        'comprimido · ' + fmtSize(sent) + ' de ' + fmtSize(file.size));
+    }
+  })();
+
+  let off = 0;
+  while (off < file.size) {
+    if (sendCancel || dc.closed) { try { writer.abort(); } catch (e) {} return; }
+    const end = Math.min(off + chunkSize, file.size);
+    await writer.write(await file.slice(off, end).arrayBuffer());
+    off = end;
+    setProgress('send', (off / file.size) * 100, file.name + ' (comprimiendo)', off + ' / ' + file.size + ' bytes');
+  }
+  await writer.close();
+  await pump;
 }
 
 function waitReady(dc) {
@@ -822,7 +885,7 @@ function handleData(data, dc) {
     try { msg = JSON.parse(data); } catch (e) { return; }
 
     if (msg.type === 'meta') {
-      current = { name: msg.name, mime: msg.mime, size: msg.size, chunks: [], received: 0 };
+      current = { name: msg.name, mime: msg.mime, size: msg.size, chunks: [], received: 0, compressed: !!msg.compressed };
       renderRecv();
       // Confirmación (por si el emisor aún no la recibió al abrir)
       try { dc.send(JSON.stringify({ type: 'ready' })); } catch (e) {}
@@ -878,9 +941,39 @@ function updateRecvProgressText() {
 
 function finishCurrent() {
   if (!current) return;
-  const blob = new Blob(current.chunks, { type: current.mime });
-  received.push({ name: current.name, size: current.size, url: URL.createObjectURL(blob) });
+  const cur = current;
   current = null;
+  if (recvWatchdog) { clearTimeout(recvWatchdog); recvWatchdog = null; }
+
+  if (!cur.compressed) {
+    addReceived(cur, new Blob(cur.chunks, { type: cur.mime }));
+    return;
+  }
+
+  setStatus($('recvStatus'), 'Descomprimiendo ' + cur.name + '…', 'wait');
+  try {
+    if (typeof DecompressionStream === 'undefined') throw new Error('sin soporte');
+    const stream = new Blob(cur.chunks).stream().pipeThrough(new DecompressionStream('gzip'));
+    new Response(stream).blob().then(blob => {
+      addReceived(cur, blob);
+      setStatus($('recvStatus'), 'Archivo recibido y descomprimido.', 'ok');
+    }).catch(err => fallbackPlain());
+  } catch (err) {
+    fallbackPlain();
+  }
+
+  // Si no se puede descomprimir, se entrega el contenido tal cual
+  // para no perder el archivo; el receptor suele ser un navegador sin soporte.
+  function fallbackPlain() {
+    console.warn('descompresion no disponible, se entrega el texto sin expandir');
+    const blob = new Blob(cur.chunks, { type: cur.mime });
+    addReceived(cur, blob);
+    setStatus($('recvStatus'), cur.name + ' recibido (sin descomprimir).', 'ok');
+  }
+}
+
+function addReceived(cur, blob) {
+  received.push({ name: cur.name, size: blob.size, url: URL.createObjectURL(blob) });
   renderRecv();
 }
 
