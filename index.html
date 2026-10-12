@@ -368,8 +368,8 @@
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 /* ---------- Estado ---------- */
-const CHUNK = 64 * 1024;
-const HIGH_WATER = 4 * 1024 * 1024;
+const CHUNK = 16 * 1024;          // WebRTC limita el tamaño por mensaje (~16 KB)
+const HIGH_WATER = 512 * 1024;    // control de flujo para no saturar el canal
 
 // STUN + TURN: sin TURN los dispositivos detrás de NAT estricto
 // (datos móviles, routers corporativos, AP isolation) no pueden conectarse.
@@ -416,6 +416,7 @@ const receivers = new Set();
 let current = null;      // archivo en recepción
 let received = [];       // archivos completados
 let recvPeer = null;
+let recvWatchdog = null;
 
 /* ---------- Utilidades ---------- */
 const $ = id => document.getElementById(id);
@@ -582,29 +583,58 @@ function stopSending() {
 }
 
 async function streamTo(dc) {
-  for (const { file } of selectedFiles) {
-    if (sendCancel || dc.closed) return;
-    const mime = file.type || 'application/octet-stream';
-    await sendRaw(dc, JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime }));
-    for (let off = 0; off < file.size; off += CHUNK) {
+  // Espera confirmación del receptor antes de empezar
+  await waitReady(dc);
+  if (sendCancel || dc.closed) return;
+
+  try {
+    for (const { file } of selectedFiles) {
       if (sendCancel || dc.closed) return;
-      const buf = await file.slice(off, off + CHUNK).arrayBuffer();
-      await sendRaw(dc, buf);
-      await drain(dc);
-      const sent = Math.min(off + CHUNK, file.size);
-      const pct = file.size ? (sent / file.size) * 100 : 100;
-      setProgress('send', pct, file.name, pct.toFixed(0) + '% · ' + fmtSize(sent));
+      const mime = file.type || 'application/octet-stream';
+      await sendRaw(dc, JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime }));
+      for (let off = 0; off < file.size; off += CHUNK) {
+        if (sendCancel || dc.closed) return;
+        const buf = await file.slice(off, off + CHUNK).arrayBuffer();
+        await sendRaw(dc, buf);
+        await drain(dc);
+        const sent = Math.min(off + CHUNK, file.size);
+        const pct = file.size ? (sent / file.size) * 100 : 100;
+        setProgress('send', pct, file.name, pct.toFixed(0) + '% · ' + fmtSize(sent));
+      }
+      await sendRaw(dc, JSON.stringify({ type: 'end' }));
     }
-    await sendRaw(dc, JSON.stringify({ type: 'end' }));
+    await sendRaw(dc, JSON.stringify({ type: 'done' }));
+    setStatus($('sendStatus'), 'Archivos enviados correctamente.', 'ok');
+    setTimeout(() => { try { dc.close(); } catch (e) {} }, 500);
+  } catch (err) {
+    console.error('Error de envio:', err);
+    setStatus($('sendStatus'), 'Error al enviar: ' + (err && err.message ? err.message : err), 'err');
   }
-  await sendRaw(dc, JSON.stringify({ type: 'done' }));
-  setTimeout(() => { try { dc.close(); } catch (e) {} }, 500);
+}
+
+function waitReady(dc) {
+  return new Promise(res => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; dc.off('data', onData); res(); } };
+    function onData(d) {
+      try {
+        const m = JSON.parse(d);
+        if (m.type === 'ready') finish();
+      } catch (e) {}
+    }
+    dc.on('data', onData);
+    dc.on('close', finish);
+    setTimeout(finish, 8000);
+  });
 }
 
 function sendRaw(dc, data) {
-  return new Promise(res => {
-    try { dc.send(data, res); }
-    catch (e) { res(); }
+  return new Promise((res, rej) => {
+    try {
+      dc.send(data, err => (err ? rej(err) : res()));
+    } catch (e) {
+      rej(e);
+    }
   });
 }
 
@@ -741,7 +771,7 @@ function connectReceiver() {
       ok = true;
       setStatus($('recvStatus'), 'Conectado. Esperando archivos…', 'wait');
     });
-    dc.on('data', data => handleData(data));
+    dc.on('data', data => handleData(data, dc));
     dc.on('error', () => setStatus($('recvStatus'), 'No se pudo conectar con ese código', 'err'));
     dc.on('close', () => {
       if (ok) {
@@ -765,7 +795,7 @@ function connectReceiver() {
   });
 }
 
-function handleData(data) {
+function handleData(data, dc) {
   if (typeof data === 'string') {
     let msg;
     try { msg = JSON.parse(data); } catch (e) { return; }
@@ -773,6 +803,9 @@ function handleData(data) {
     if (msg.type === 'meta') {
       current = { name: msg.name, mime: msg.mime, size: msg.size, chunks: [], received: 0 };
       renderRecv();
+      // Confirmación: el emisor espera esto antes de enviar los datos
+      try { dc.send(JSON.stringify({ type: 'ready' })); } catch (e) {}
+      armWatchdog();
     } else if (msg.type === 'end') {
       finishCurrent();
     } else if (msg.type === 'done') {
@@ -782,6 +815,16 @@ function handleData(data) {
   }
 
   addChunk(data);
+}
+
+// Si llega la cabecera pero no se recibe ningún dato, avisar en vez de quedarse al 0 %
+function armWatchdog() {
+  if (recvWatchdog) clearTimeout(recvWatchdog);
+  recvWatchdog = setTimeout(() => {
+    if (current && current.received === 0 && current.size > 0) {
+      setStatus($('recvStatus'), 'Conectado, pero no llegan los datos. Prueba a regenerar el código en el emisor.', 'err');
+    }
+  }, 10000);
 }
 
 function addChunk(data) {
