@@ -6,12 +6,13 @@
 
 Lectura por defecto: `7. MEMORIA` y este mapa. Las secciones `1`–`5` se abren **solo** cuando la tarea las mencione (`4. CAPACIDADES` y `5. LECCIONES` son de consulta).
 
-- precios, wishlist, comandos, endpoints → `4. CAPACIDADES`
-- KV, claves, APIs externas, config, dedup → `3. RECURSOS`
-- worker / entry points / cron / despliegue / logs → `2. ARQUITECTURA`
-- qué es el proyecto, stack, rutas, repo, versión → `1. IDENTIDAD`
-- por qué algo se hizo así, gotchas, errores del pasado → `5. LECCIONES`
-- cómo validar / desplegar / ver logs → `6. SKILLS`
+- p2p, peerjs, peer id, codigo de 6 digitos, conectar → `4. CAPACIDADES`
+- varios archivos, multi-archivo, en orden, carpeta → `4. CAPACIDADES`
+- gzip, streaming, compresion, envio sin conexion previa → `4. CAPACIDADES`
+- fetch, sin backend, build, repo, deploy → `2. ARQUITECTURA`
+- que es el proyecto, stack, rutas, repo, URL de Pages → `1. IDENTIDAD`
+- por que algo se hizo asi, gotchas, errores del pasado → `5. LECCIONES`
+- como validar, desplegar, ver logs → `6. SKILLS`
 - estado actual, decisiones, tarea activa → `7. MEMORIA`
 - historial de cambios → `8. VERSIONES` (solo visibles; `8b` nunca)
 - entradas antiguas → `5b` / `8b`
