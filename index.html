@@ -243,6 +243,50 @@
     border-left: 3px solid var(--border);
     padding-left: 12px;
   }
+
+  .advanced {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+  }
+  .advanced summary {
+    cursor: pointer;
+    font-size: .88rem;
+    color: var(--muted);
+    user-select: none;
+  }
+  .advanced summary:hover { color: var(--text); }
+  .advanced-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .advanced-grid input {
+    background: #12141c;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 11px 13px;
+    color: var(--text);
+    font-size: .85rem;
+  }
+  .advanced-grid input:focus { outline: none; border-color: var(--accent); }
+  @media (max-width: 600px) { .advanced-grid { grid-template-columns: 1fr; } }
+
+  .diag {
+    margin-top: 10px;
+    font-size: .74rem;
+    color: var(--muted);
+    background: #12141c;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    word-break: break-all;
+    display: none;
+  }
+  .diag.show { display: block; }
 </style>
 </head>
 <body>
@@ -256,6 +300,16 @@
     <button class="tab active" data-tab="send">📤 Enviar</button>
     <button class="tab" data-tab="recv">📥 Recibir</button>
   </div>
+
+  <details class="advanced">
+    <summary>⚙️ Configuración avanzada (servidor TURN)</summary>
+    <p class="note" style="margin-top:12px">Si los dispositivos están en redes distintas o el router aísla clientes (AP isolation), la conexión directa falla. Añade aquí tu propio servidor TURN (gratis: openrelay, coturn, Xirsys, Cloudflare).</p>
+    <div class="advanced-grid">
+      <input id="turnUrl" placeholder="turn:mi-servidor.com:3478">
+      <input id="turnUser" placeholder="usuario">
+      <input id="turnPass" placeholder="contraseña">
+    </div>
+  </details>
 
   <!-- ENVIAR -->
   <section id="sendPanel">
@@ -280,6 +334,7 @@
       </div>
 
       <div class="status" id="sendStatus"></div>
+      <div class="diag" id="sendDiag"></div>
       <div class="progress" id="sendProgress"><div></div></div>
       <div class="progress-label" id="sendProgressLabel"><span></span><span></span></div>
 
@@ -297,6 +352,7 @@
       </div>
 
       <div class="status" id="recvStatus"></div>
+      <div class="diag" id="recvDiag"></div>
       <div class="progress" id="recvProgress"><div></div></div>
       <div class="progress-label" id="recvProgressLabel"><span></span><span></span></div>
 
@@ -316,8 +372,10 @@ const CHUNK = 64 * 1024;
 const HIGH_WATER = 4 * 1024 * 1024;
 
 // STUN + TURN: sin TURN los dispositivos detrás de NAT estricto
-// (datos móviles, routers corporativos) no pueden conectarse entre sí.
-const ICE_CONFIG = {
+// (datos móviles, routers corporativos, AP isolation) no pueden conectarse.
+const TURN_KEY = 'sendAnywhereTurn';
+
+const DEFAULT_ICE = {
   iceServers: [
     { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
     { urls: 'turn:openrelay.metered.ca:80',  username: 'openrelayproject', credential: 'openrelayproject' },
@@ -325,6 +383,40 @@ const ICE_CONFIG = {
     { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
   ]
 };
+
+function loadCustomTurn() {
+  try { return JSON.parse(localStorage.getItem(TURN_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function iceConfig() {
+  const cfg = { iceServers: DEFAULT_ICE.iceServers.slice() };
+  const t = loadCustomTurn();
+  if (t.url) {
+    cfg.iceServers.push({ urls: t.url, username: t.user || '', credential: t.pass || '' });
+  }
+  return cfg;
+}
+
+function saveCustomTurn() {
+  const t = {
+    url: $('turnUrl').value.trim(),
+    user: $('turnUser').value.trim(),
+    pass: $('turnPass').value,
+  };
+  if (t.url) localStorage.setItem(TURN_KEY, JSON.stringify(t));
+  else localStorage.removeItem(TURN_KEY);
+}
+
+['turnUrl', 'turnUser', 'turnPass'].forEach(id => {
+  $(id).addEventListener('change', saveCustomTurn);
+});
+
+(function initTurnFields() {
+  const t = loadCustomTurn();
+  $('turnUrl').value = t.url || '';
+  $('turnUser').value = t.user || '';
+  $('turnPass').value = t.pass || '';
+})();
 
 let peer = null;
 let sendCode = null;
@@ -436,7 +528,7 @@ function startSending() {
 
   const newCode = genCode();
   setStatus($('sendStatus'), 'Conectando al servidor de señalización…', '');
-  peer = new Peer(newCode, { debug: 0, config: ICE_CONFIG });
+  peer = new Peer(newCode, { debug: 0, config: iceConfig() });
 
   peer.on('open', id => {
     sendCode = id;
@@ -532,18 +624,58 @@ async function drain(dc) {
   while (dc.bufferedAmount > HIGH_WATER && guard++ < 2000) await sleep(30);
 }
 
-// Diagnóstico del estado de la conexión ICE real
+// Diagnóstico del estado real de la conexión ICE
 function watchIce(dc, onFail) {
   const pc = dc.peerConnection;
   if (!pc) return;
-  pc.oniceconnectionstatechange = () => {
-    if (pc.iceConnectionState === 'failed') onFail('failed');
+  let done = false;
+
+  const fail = state => {
+    if (done) return;
+    done = true;
+    onFail(state, candidateTypes(pc));
   };
+
+  pc.oniceconnectionstatechange = () => {
+    showDiag(pc, 'ICE: ' + pc.iceConnectionState);
+    if (pc.iceConnectionState === 'failed') fail('failed');
+    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      done = true;
+      showDiag(pc, 'ICE: conectado · ruta ' + candidateTypes(pc));
+    }
+  };
+
   setTimeout(() => {
     if (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
-      onFail(pc.iceConnectionState);
+      fail(pc.iceConnectionState);
     }
-  }, 15000);
+  }, 20000);
+}
+
+function candidateTypes(pc) {
+  let type = 'desconocida';
+  try {
+    pc.getStats().forEach(r => {
+      if (r.type === 'candidate-pair' && r.selected && r.state === 'succeeded') {
+        type = r.nominated ? 'nominated' : 'succeeded';
+      }
+    });
+  } catch (e) {}
+  return type;
+}
+
+function showDiag(pc, prefix) {
+  const boxes = document.querySelectorAll('.diag');
+  let routes = [];
+  try {
+    pc.getStats().forEach(r => {
+      if (r.type === 'candidate-pair' && r.nominated) routes.push(r.state || '');
+    });
+  } catch (e) {}
+  boxes.forEach(b => {
+    b.textContent = prefix + (routes.length ? ' · ruta: ' + routes.join(',') : '');
+    b.classList.add('show');
+  });
 }
 
 function renderQr() {
@@ -600,7 +732,7 @@ function connectReceiver() {
   if (recvPeer) { try { recvPeer.destroy(); } catch (e) {} }
 
   setStatus($('recvStatus'), `Buscando el código ${code}…`, 'wait');
-  recvPeer = new Peer({ debug: 0, config: ICE_CONFIG });
+  recvPeer = new Peer({ debug: 0, config: iceConfig() });
 
   recvPeer.on('open', () => {
     const dc = recvPeer.connect(code, { reliable: true, serialization: 'binary' });
