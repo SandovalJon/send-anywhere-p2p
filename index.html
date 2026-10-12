@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Send Anywhere - Comparte archivos</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2e3d;
+    --text: #e6e8ee;
+    --muted: #8a90a5;
+    --accent: #6c8cff;
+    --accent2: #b06cff;
+    --ok: #35d07f;
+    --err: #ff6b6b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+    padding: 0 0 60px;
+  }
+  header {
+    text-align: center;
+    padding: 32px 20px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--card);
+  }
+  header h1 {
+    font-size: 1.7rem;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  header p { color: var(--muted); margin-top: 6px; font-size: .92rem; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px; }
+
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 22px;
+    background: var(--card);
+    padding: 6px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  .tab {
+    flex: 1;
+    padding: 12px;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: .98rem;
+    font-weight: 600;
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .tab.active { background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #fff; }
+
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px;
+  }
+  .hidden { display: none !important; }
+
+  .dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 34px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .dropzone:hover, .dropzone.dragover { border-color: var(--accent); background: #1d2130; }
+  .dropzone input { display: none; }
+  .dropzone .icon { font-size: 2rem; }
+  .dropzone p { color: var(--muted); margin-top: 8px; font-size: .9rem; }
+  .dropzone strong { color: var(--text); }
+
+  .filelist { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .fileitem {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    background: #12141c;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 10px 14px;
+    font-size: .88rem;
+  }
+  .fileitem .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fileitem .size { color: var(--muted); font-size: .8rem; white-space: nowrap; }
+
+  .btn {
+    padding: 13px 18px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #23273a;
+    color: var(--text);
+    font-size: .95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter .15s, border-color .15s;
+  }
+  .btn:hover:not(:disabled) { filter: brightness(1.2); border-color: var(--accent); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn.primary {
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border: none;
+    color: #fff;
+  }
+  .btn.block { display: block; width: 100%; margin-top: 16px; }
+
+  .codebox {
+    margin-top: 20px;
+    text-align: center;
+    padding: 22px;
+    background: #12141c;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .codebox .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; }
+  .code {
+    font-size: clamp(2rem, 9vw, 3.2rem);
+    font-weight: 700;
+    letter-spacing: .28em;
+    margin: 8px 0 14px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-variant-numeric: tabular-nums;
+  }
+  .code-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .qr { margin-top: 16px; display: flex; justify-content: center; }
+  .qr canvas, .qr img { border-radius: 8px; }
+
+  .status {
+    margin-top: 16px;
+    text-align: center;
+    font-size: .9rem;
+    color: var(--muted);
+  }
+  .status .dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 6px;
+    animation: pulse 1.2s infinite;
+  }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+
+  .codeinput {
+    display: flex;
+    gap: 10px;
+    margin-top: 6px;
+  }
+  .codeinput input {
+    flex: 1;
+    background: #12141c;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    color: var(--text);
+    font-size: 1.6rem;
+    letter-spacing: .3em;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .codeinput input:focus { outline: none; border-color: var(--accent); }
+
+  .progress {
+    margin-top: 18px;
+    height: 10px;
+    background: #12141c;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+    display: none;
+  }
+  .progress.active { display: block; }
+  .progress > div {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    transition: width .15s;
+  }
+  .progress-label {
+    display: none;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: .82rem;
+    color: var(--muted);
+  }
+  .progress-label.active { display: flex; }
+
+  .received { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; }
+  .recv-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    background: #12141c;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 12px 14px;
+    font-size: .88rem;
+  }
+  .recv-item.done { border-color: var(--ok); }
+  .recv-item .info { min-width: 0; }
+  .recv-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recv-item .meta { color: var(--muted); font-size: .78rem; }
+  .dl {
+    background: var(--ok);
+    color: #06210f;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-weight: 700;
+    font-size: .82rem;
+    cursor: pointer;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .note {
+    margin-top: 18px;
+    font-size: .78rem;
+    color: var(--muted);
+    line-height: 1.5;
+    border-left: 3px solid var(--border);
+    padding-left: 12px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Send Anywhere</h1>
+  <p>Comparte archivos sin registro ·Transferencia directa entre dispositivos</p>
+</header>
+
+<main>
+  <div class="tabs">
+    <button class="tab active" data-tab="send">📤 Enviar</button>
+    <button class="tab" data-tab="recv">📥 Recibir</button>
+  </div>
+
+  <!-- ENVIAR -->
+  <section id="sendPanel">
+    <div class="panel">
+      <div class="dropzone" id="dropzone">
+        <div class="icon">📁</div>
+        <p>Arrastra tus archivos aquí o <strong>haz clic para seleccionar</strong></p>
+        <input type="file" id="fileInput" multiple>
+      </div>
+
+      <div class="filelist" id="fileList"></div>
+      <button class="btn primary block" id="generateBtn">Generar código de envío</button>
+
+      <div class="codebox hidden" id="sendCodeBox">
+        <div class="label">Código de 6 dígitos</div>
+        <div class="code" id="sendCode">------</div>
+        <div class="code-actions">
+          <button class="btn" id="copyBtn">📋 Copiar código</button>
+          <button class="btn" id="copyLinkBtn">🔗 Copiar enlace</button>
+        </div>
+        <div class="qr" id="qr"></div>
+      </div>
+
+      <div class="status" id="sendStatus"></div>
+      <div class="progress" id="sendProgress"><div></div></div>
+      <div class="progress-label" id="sendProgressLabel"><span></span><span></span></div>
+
+      <p class="note">El archivo viaja directo de tu dispositivo al del receptor (P2P) y no se almacena en ningún servidor. El código funciona mientras esta página esté abierta.</p>
+    </div>
+  </section>
+
+  <!-- RECIBIR -->
+  <section id="recvPanel" class="hidden">
+    <div class="panel">
+      <div class="label" style="color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;">Código de 6 dígitos</div>
+      <div class="codeinput">
+        <input id="recvCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000">
+        <button class="btn primary" id="connectBtn">Conectar</button>
+      </div>
+
+      <div class="status" id="recvStatus"></div>
+      <div class="progress" id="recvProgress"><div></div></div>
+      <div class="progress-label" id="recvProgressLabel"><span></span><span></span></div>
+
+      <div class="received" id="recvList"></div>
+      <button class="btn block hidden" id="downloadAllBtn">⬇ Descargar todo</button>
+
+      <p class="note">El código es corto y por eso es fácil de adivinar: compártelo solo con quien confíes. La conexión se cifra de extremo a extremo.</p>
+    </div>
+  </section>
+</main>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script>
+/* ---------- Estado ---------- */
+const CHUNK = 64 * 1024;
+const HIGH_WATER = 4 * 1024 * 1024;
+
+let peer = null;
+let sendCode = null;
+let selectedFiles = [];
+let sendCancel = false;
+const receivers = new Set();
+
+let current = null;      // archivo en recepción
+let received = [];       // archivos completados
+let recvPeer = null;
+
+/* ---------- Utilidades ---------- */
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  const u = ['KB', 'MB', 'GB', 'TB'];
+  let i = -1, n = bytes;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(n < 10 ? 1 : 0) + ' ' + u[i];
+}
+
+function setStatus(el, text, type) {
+  el.innerHTML = (type === 'wait' ? '<span class="dot"></span>' : '') + text;
+  el.className = 'status' + (type ? ' ' + type : '');
+}
+
+function setProgress(kind, pct, left, right) {
+  const bar = $(kind + 'Progress');
+  const lbl = $(kind + 'ProgressLabel');
+  bar.classList.add('active');
+  bar.firstElementChild.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  lbl.classList.add('active');
+  lbl.children[0].textContent = left;
+  lbl.children[1].textContent = right;
+}
+
+function resetProgress(kind) {
+  $(kind + 'Progress').classList.remove('active');
+  $(kind + 'ProgressLabel').classList.remove('active');
+}
+
+/* ---------- Pestañas ---------- */
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    $('sendPanel').classList.toggle('hidden', t.dataset.tab !== 'send');
+    $('recvPanel').classList.toggle('hidden', t.dataset.tab !== 'recv');
+  });
+});
+
+/* ---------- Selección de archivos ---------- */
+const dropzone = $('dropzone');
+const fileInput = $('fileInput');
+
+dropzone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => addFiles(e.target.files));
+['dragenter', 'dragover'].forEach(ev => dropzone.addEventListener(ev, e => {
+  e.preventDefault(); dropzone.classList.add('dragover');
+}));
+['dragleave', 'drop'].forEach(ev => dropzone.addEventListener(ev, e => {
+  e.preventDefault(); dropzone.classList.remove('dragover');
+}));
+dropzone.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+
+function addFiles(files) {
+  for (const f of files) {
+    selectedFiles.push({ file: f, size: f.size, name: f.name });
+  }
+  renderFiles();
+}
+
+function renderFiles() {
+  const list = $('fileList');
+  list.innerHTML = '';
+  selectedFiles.forEach((f, i) => {
+    const item = document.createElement('div');
+    item.className = 'fileitem';
+    item.innerHTML = `<span class="name">${f.name}</span><span class="size">${fmtSize(f.size)}</span>`;
+    const del = document.createElement('button');
+    del.className = 'btn';
+    del.style.padding = '6px 10px';
+    del.textContent = '✕';
+    del.addEventListener('click', () => { selectedFiles.splice(i, 1); renderFiles(); });
+    item.appendChild(del);
+    list.appendChild(item);
+  });
+  $('generateBtn').disabled = selectedFiles.length === 0;
+  $('generateBtn').textContent = sendCode
+    ? 'Detener y generar otro código'
+    : 'Generar código de envío';
+}
+
+$('generateBtn').addEventListener('click', () => {
+  if (sendCode) { stopSending(); return; }
+  startSending();
+});
+
+/* ---------- Envío (P2P) ---------- */
+function genCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function startSending() {
+  if (!selectedFiles.length) return;
+  sendCancel = false;
+
+  const newCode = genCode();
+  setStatus($('sendStatus'), 'Conectando al servidor de señalización…', '');
+  peer = new Peer(newCode, { debug: 0 });
+
+  peer.on('open', id => {
+    sendCode = id;
+    $('sendCode').textContent = id;
+    $('sendCodeBox').classList.remove('hidden');
+    $('generateBtn').textContent = 'Detener y generar otro código';
+    renderQr();
+    setStatus($('sendStatus'), `Esperando a que alguien se conecte con el código ${id}…`, 'wait');
+  });
+
+  peer.on('connection', dc => {
+    receivers.add(dc);
+    setStatus($('sendStatus'), ` receptor conectado. Enviando…`, '');
+    streamTo(dc);
+    dc.on('close', () => {
+      receivers.delete(dc);
+      if (!receivers.size && !sendCancel) {
+        setStatus($('sendStatus'), 'Transferencia completada. Puedes generar otro código.', 'ok');
+      }
+    });
+  });
+
+  peer.on('error', err => {
+    if (err.type === 'unavailable-id') {
+      peer.destroy();
+      startSending();
+      return;
+    }
+    setStatus($('sendStatus'), 'Error: ' + err.type, 'err');
+  });
+}
+
+function stopSending() {
+  sendCancel = true;
+  receivers.forEach(dc => { try { dc.close(); } catch (e) {} });
+  receivers.clear();
+  if (peer) { peer.destroy(); peer = null; }
+  sendCode = null;
+  resetProgress('send');
+  $('sendCodeBox').classList.add('hidden');
+  $('qr').innerHTML = '';
+  setStatus($('sendStatus'), '');
+  $('generateBtn').textContent = 'Generar código de envío';
+}
+
+async function streamTo(dc) {
+  for (const { file } of selectedFiles) {
+    if (sendCancel || dc.closed) return;
+    const mime = file.type || 'application/octet-stream';
+    await sendRaw(dc, JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime }));
+    for (let off = 0; off < file.size; off += CHUNK) {
+      if (sendCancel || dc.closed) return;
+      const buf = await file.slice(off, off + CHUNK).arrayBuffer();
+      await sendRaw(dc, buf);
+      await drain(dc);
+      const sent = Math.min(off + CHUNK, file.size);
+      const pct = file.size ? (sent / file.size) * 100 : 100;
+      setProgress('send', pct, file.name, pct.toFixed(0) + '% · ' + fmtSize(sent));
+    }
+    await sendRaw(dc, JSON.stringify({ type: 'end' }));
+  }
+  await sendRaw(dc, JSON.stringify({ type: 'done' }));
+  setTimeout(() => { try { dc.close(); } catch (e) {} }, 500);
+}
+
+function sendRaw(dc, data) {
+  return new Promise(res => {
+    try { dc.send(data, res); }
+    catch (e) { res(); }
+  });
+}
+
+async function drain(dc) {
+  let guard = 0;
+  while (dc.bufferedAmount > HIGH_WATER && guard++ < 2000) await sleep(30);
+}
+
+function renderQr() {
+  const box = $('qr');
+  box.innerHTML = '';
+  if (!window.QRCode) return;
+  const link = location.origin + location.pathname + '?c=' + sendCode;
+  new QRCode(box, {
+    text: link,
+    width: 150,
+    height: 150,
+    colorDark: '#0f1117',
+    colorLight: '#ffffff',
+  });
+}
+
+$('copyBtn').addEventListener('click', () => copy(sendCode, 'Código copiado'));
+$('copyLinkBtn').addEventListener('click', () => {
+  const link = location.origin + location.pathname + '?c=' + sendCode;
+  copy(link, 'Enlace copiado');
+});
+
+function copy(text, msg) {
+  const done = () => {
+    const s = $('sendStatus');
+    const prev = s.innerHTML;
+    s.textContent = msg;
+    setTimeout(() => { s.innerHTML = prev; }, 1200);
+  };
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(done).catch(() => fallback());
+  else fallback();
+  function fallback() {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) {}
+    ta.remove();
+  }
+}
+
+/* ---------- Recepción ---------- */
+$('connectBtn').addEventListener('click', connectReceiver);
+$('recvCode').addEventListener('keydown', e => {
+  if (e.key === 'Enter') connectReceiver();
+});
+
+function connectReceiver() {
+  const code = $('recvCode').value.trim();
+  if (!/^\d{6}$/.test(code)) {
+    setStatus($('recvStatus'), 'El código debe tener 6 dígitos', 'err');
+    return;
+  }
+  if (recvPeer) { try { recvPeer.destroy(); } catch (e) {} }
+
+  setStatus($('recvStatus'), `Buscando el código ${code}…`, 'wait');
+  recvPeer = new Peer({ debug: 0 });
+
+  recvPeer.on('open', () => {
+    const dc = recvPeer.connect(code, { reliable: true, serialization: 'binary' });
+    dc.on('open', () => setStatus($('recvStatus'), 'Conectado. Esperando archivos…', 'wait'));
+    dc.on('data', data => handleData(data));
+    dc.on('error', () => setStatus($('recvStatus'), 'No se pudo conectar con ese código', 'err'));
+    dc.on('close', () => {
+      setStatus($('recvStatus'), 'El emisor cerró la conexión.', 'ok');
+      finishCurrent();
+    });
+  });
+
+  recvPeer.on('error', err => {
+    if (err.type === 'peer-unavailable') {
+      setStatus($('recvStatus'), 'Ese código no existe o el emisor ya cerró', 'err');
+    } else {
+      setStatus($('recvStatus'), 'Error: ' + err.type, 'err');
+    }
+  });
+}
+
+function handleData(data) {
+  if (typeof data === 'string') {
+    let msg;
+    try { msg = JSON.parse(data); } catch (e) { return; }
+
+    if (msg.type === 'meta') {
+      current = { name: msg.name, mime: msg.mime, size: msg.size, chunks: [], received: 0 };
+      renderRecv();
+    } else if (msg.type === 'end') {
+      finishCurrent();
+    } else if (msg.type === 'done') {
+      setStatus($('recvStatus'), 'Todos los archivos recibidos.', 'ok');
+    }
+    return;
+  }
+
+  addChunk(data);
+}
+
+function addChunk(data) {
+  if (!current) return;
+  // PeerJS puede entregar ArrayBuffer o Blob según la serialización
+  if (data instanceof Blob) {
+    data.arrayBuffer().then(buf => pushChunk(buf));
+  } else {
+    pushChunk(data);
+  }
+}
+
+function pushChunk(buf) {
+  if (!current) return;
+  current.chunks.push(buf);
+  current.received += buf.byteLength;
+  const pct = current.size ? (current.received / current.size) * 100 : 100;
+  setProgress('recv', pct, current.name, pct.toFixed(0) + '% · ' + fmtSize(current.received));
+  renderRecv();
+}
+
+function finishCurrent() {
+  if (!current) return;
+  const blob = new Blob(current.chunks, { type: current.mime });
+  received.push({ name: current.name, size: current.size, url: URL.createObjectURL(blob) });
+  current = null;
+  renderRecv();
+}
+
+function renderRecv() {
+  const list = $('recvList');
+  list.innerHTML = '';
+
+  if (current) {
+    const pct = current.size ? (current.received / current.size) * 100 : 0;
+    const item = document.createElement('div');
+    item.className = 'recv-item';
+    item.innerHTML = `<div class="info"><div class="name">${current.name}</div>
+      <div class="meta">Recibiendo… ${pct.toFixed(0)}% · ${fmtSize(current.received)} / ${fmtSize(current.size)}</div></div>`;
+    list.appendChild(item);
+  }
+
+  for (const f of received) {
+    const item = document.createElement('div');
+    item.className = 'recv-item done';
+    const dl = document.createElement('a');
+    dl.className = 'dl';
+    dl.href = f.url;
+    dl.download = f.name;
+    dl.textContent = '⬇ Guardar';
+    const info = document.createElement('div');
+    info.className = 'info';
+    info.innerHTML = `<div class="name">${f.name}</div><div class="meta">✓ Completo · ${fmtSize(f.size)}</div>`;
+    item.appendChild(info);
+    item.appendChild(dl);
+    list.appendChild(item);
+  }
+
+  $('downloadAllBtn').classList.toggle('hidden', received.length === 0);
+}
+
+$('downloadAllBtn').addEventListener('click', () => {
+  received.forEach((f, i) => setTimeout(() => {
+    const a = document.createElement('a');
+    a.href = f.url;
+    a.download = f.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, i * 300));
+});
+
+/* ---------- Enlace con código ---------- */
+const urlCode = new URLSearchParams(location.search).get('c');
+if (urlCode && /^\d{6}$/.test(urlCode)) {
+  document.querySelector('.tab[data-tab="recv"]').click();
+  $('recvCode').value = urlCode;
+}
+</script>
+</body>
+</html>
