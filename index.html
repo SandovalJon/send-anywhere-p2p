@@ -368,8 +368,11 @@
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 /* ---------- Estado ---------- */
-const CHUNK = 16 * 1024;          // WebRTC limita el tamaño por mensaje (~16 KB)
-const HIGH_WATER = 512 * 1024;    // control de flujo para no saturar el canal
+// WebRTC tolera mensajes grandes entre navegadores directos; si un envio falla
+// se reduce el tamaño automaticamente (nunca baja de 16 KB).
+const MIN_CHUNK = 16 * 1024;
+let chunkSize = 64 * 1024;
+const PIPE = 1024 * 1024;   // 1 MB en vuelo: mantiene la tubería llena
 
 // STUN + TURN: sin TURN los dispositivos detrás de NAT estricto
 // (datos móviles, routers corporativos, AP isolation) no pueden conectarse.
@@ -592,14 +595,25 @@ async function streamTo(dc) {
       if (sendCancel || dc.closed) return;
       const mime = file.type || 'application/octet-stream';
       await sendRaw(dc, JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime }));
-      for (let off = 0; off < file.size; off += CHUNK) {
+
+      let off = 0;
+      while (off < file.size) {
         if (sendCancel || dc.closed) return;
-        const buf = await file.slice(off, off + CHUNK).arrayBuffer();
-        await sendRaw(dc, buf);
+        const end = Math.min(off + chunkSize, file.size);
+        const buf = await file.slice(off, end).arrayBuffer();
+        try {
+          await sendRaw(dc, buf);
+        } catch (e) {
+          if (chunkSize > MIN_CHUNK) {
+            chunkSize = Math.floor(chunkSize / 2);
+            continue;
+          }
+          throw e;
+        }
+        off = end;
         await drain(dc);
-        const sent = Math.min(off + CHUNK, file.size);
-        const pct = file.size ? (sent / file.size) * 100 : 100;
-        setProgress('send', pct, file.name, pct.toFixed(0) + '% · ' + fmtSize(sent));
+        const pct = file.size ? (off / file.size) * 100 : 100;
+        setProgress('send', pct, file.name, pct.toFixed(0) + '% · ' + fmtSize(off));
       }
       await sendRaw(dc, JSON.stringify({ type: 'end' }));
     }
@@ -630,21 +644,22 @@ function waitReady(dc) {
 
 // NO usamos el callback de send(): con WebRTC puede no dispararse nunca
 // y la transferencia se queda congelada en el primer bloque.
-// En su lugar controlamos el flujo con bufferedAmount.
+// Control de flujo con ventana deslizante: solo esperamos al llenarse el
+// búfer, en vez de vaciarlo por completo (eso serializaba y ralentizaba).
 function sendRaw(dc, data) {
-  return new Promise(res => {
+  return new Promise((res, rej) => {
     try {
       dc.send(data);
+      res();
     } catch (e) {
-      console.error('send fallo:', e);
+      rej(e);
     }
-    res();
   });
 }
 
 async function drain(dc) {
   let guard = 0;
-  while (dc.bufferedAmount > 0 && guard++ < 10000) await sleep(10);
+  while (dc.bufferedAmount > PIPE && guard++ < 5000) await sleep(5);
 }
 
 // Diagnóstico del estado real de la conexión ICE
@@ -849,7 +864,16 @@ function pushChunk(buf) {
   current.received += buf.byteLength;
   const pct = current.size ? (current.received / current.size) * 100 : 100;
   setProgress('recv', pct, current.name, pct.toFixed(0) + '% · ' + fmtSize(current.received));
-  renderRecv();
+  updateRecvProgressText();
+}
+
+// Actualiza solo el texto, sin reconstruir la lista en cada bloque
+function updateRecvProgressText() {
+  if (!current) return;
+  const meta = $('recvList').querySelector('.recv-item:not(.done) .meta');
+  if (!meta) return;
+  const pct = current.size ? (current.received / current.size) * 100 : 0;
+  meta.textContent = `Recibiendo… ${pct.toFixed(0)}% · ${fmtSize(current.received)} / ${fmtSize(current.size)}`;
 }
 
 function finishCurrent() {
