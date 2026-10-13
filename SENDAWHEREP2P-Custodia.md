@@ -1,6 +1,6 @@
 # SENDAWHEREP2P — Custodia del Proyecto
 
-> Última actualización: 2026-10-12 · Versión del documento: v1
+> Última actualización: 2026-10-12 · Versión del documento: v2
 
 ## Mapa del documento
 
@@ -24,7 +24,7 @@ Lectura por defecto: `7. MEMORIA` y este mapa. Las secciones `1`–`5` se abren 
 - Rutas principales: `index.html` (todo el proyecto). `SENDAWHEREP2P-Custodia.md` (este documento).
 - Repo git y estado: `https://github.com/SandovalJon/send-anywhere-p2p.git`, rama `master`. `git status` limpio en el momento del arranque. Últimos commits: `6bf6dd1`, `fa90259`, `4c9ec41`.
 - URLs: producción `https://sandovaljon.github.io/send-anywhere-p2p/` (HTTP 200, 33.019 bytes servidos, idéntico al tamaño del archivo local).
-- Versión del código: `6bf6dd1` ("Comprimir solo formatos de texto (gzip en flujo) con fallback seguro").
+- Versión del código: `467e1d4` ("Anadir meta description y Open Graph para mejorar indexed y compartido", 2026-10-12).
 - Fecha de la última versión del código: 2026-10-12.
 
 ## 2. ARQUITECTURA
@@ -128,6 +128,13 @@ Sin entradas archivadas todavía.
   - Secciones actualizadas: todas (creación). `6. SKILLS` incluye la publicación en Pages, la comprobación de sintaxis, el test de transferencia con jsdom y la detección de prompts anteriores.
   - Verificación: `git status` limpio; `gh api .../pages` devuelve `built` y `https_enforced: true`; el sitio responde HTTP 200 con 33.019 bytes, idénticos al archivo local. Constantes de `index.html` leídas en las líneas 367-379, 516, 551, 637, 660, 847, 955-956.
   - Pendientes: borrar el repo `wallpaper-quest` (requiere `gh auth refresh -s delete_repo`); verificar en producción la descarga de archivos recibidos, la cadena de varios archivos y el flujo con TURN propio.
+
+- v2 | 2026-10-12 | Añadir meta description y Open Graph | código: 467e1d4
+  - Agente: [opencode-1]
+  - Qué cambió: se añadió `<meta name="description">`, `og:title` y `og:description` al `<head>` de `index.html`. La página no tenía ninguno de los tres, así que al compartir el enlace no había texto de resumen. Sin cambios de lógica ni de maquetación.
+  - Secciones actualizadas: `7. MEMORIA` registra el cambio; `1. IDENTIDAD` mantiene la misma versión de código, ahora `467e1d4`.
+  - Verificación: `node --check` del script inline sin errores; en producción `https://sandovaljon.github.io/send-anywhere-p2p/` devuelve HTTP 200 y ambos metas con el texto correcto.
+  - Pendientes: ninguno de este cambio.
 
 ## 8b. VERSIONES (archivo)
 
