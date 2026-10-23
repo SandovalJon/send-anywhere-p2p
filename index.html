@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Send Anywhere - Comparte archivos</title>
 <meta name="description" content="Comparte archivos entre dispositivos con un código de 6 dígitos, por conexión directa P2P y sin registro.">
 <meta property="og:title" content="Send Anywhere">
@@ -25,7 +25,10 @@
     color: var(--text);
     font-family: 'Segoe UI', system-ui, sans-serif;
     min-height: 100vh;
+    min-height: 100dvh;
     padding: 0 0 60px;
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
   header {
     text-align: center;
@@ -100,7 +103,7 @@
     padding: 10px 14px;
     font-size: .88rem;
   }
-  .fileitem .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fileitem .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fileitem .size { color: var(--muted); font-size: .8rem; white-space: nowrap; }
 
   .btn {
@@ -172,6 +175,7 @@
   }
   .codeinput input {
     flex: 1;
+    min-width: 0;
     background: #12141c;
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -273,10 +277,23 @@
     border-radius: 9px;
     padding: 11px 13px;
     color: var(--text);
-    font-size: .85rem;
+    font-size: 1rem;
+    min-width: 0;
   }
   .advanced-grid input:focus { outline: none; border-color: var(--accent); }
   @media (max-width: 600px) { .advanced-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 400px) {
+    main { padding: 16px 12px; }
+    .panel { padding: 16px 14px; }
+    .advanced { padding: 12px 14px; }
+    header { padding: 24px 14px 16px; }
+    header h1 { font-size: 1.45rem; }
+    .tab { padding: 11px 6px; font-size: .9rem; }
+    .codeinput { flex-wrap: wrap; }
+    .codeinput input { font-size: 1.3rem; letter-spacing: .18em; }
+    .codeinput .btn { flex: 1 1 100%; }
+    .fileitem, .recv-item { padding: 10px 11px; }
+  }
 
   .diag {
     margin-top: 10px;
