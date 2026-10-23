@@ -393,7 +393,7 @@
 // se reduce el tamaño automaticamente (nunca baja de 16 KB).
 const MIN_CHUNK = 16 * 1024;
 let chunkSize = 64 * 1024;
-const PIPE = 1024 * 1024;   // 1 MB en vuelo: mantiene la tubería llena
+const PIPE = 512 * 1024;   // 512 KB en vuelo para mayor estabilidad en móviles
 
 // STUN + TURN: sin TURN los dispositivos detrás de NAT estricto
 // (datos móviles, routers corporativos, AP isolation) no pueden conectarse.
@@ -586,12 +586,15 @@ function startSending() {
 
     // No enviar hasta que el canal de datos esté realmente abierto
     let started = false;
-    const begin = () => {
-      if (started) return;
-      started = true;
-      setStatus($('sendStatus'), '1 receptor conectado. Enviando…', '');
-      streamTo(dc);
-    };
+  const begin = () => {
+    if (started) return;
+    started = true;
+    setStatus($('sendStatus'), '1 receptor conectado. Enviando…', '');
+    if (dc.bufferedAmountLowThreshold === undefined) {
+      try { dc.bufferedAmountLowThreshold = 256 * 1024; } catch (e) {}
+    }
+    streamTo(dc);
+  };
     dc.on('open', begin);
     watchIce(dc, () => {
       if (!started) {
@@ -655,11 +658,11 @@ async function streamTo(dc) {
           try {
             await sendRaw(dc, buf);
           } catch (e) {
-            if (chunkSize > MIN_CHUNK) { chunkSize = Math.floor(chunkSize / 2); continue; }
+            if (chunkSize > MIN_CHUNK) { chunkSize = Math.floor(chunkSize / 2); await sleep(100); continue; }
             throw e;
           }
           off = end;
-          await drain(dc);
+          try { await drain(dc); } catch (e) { throw e; }
           const pct = file.size ? (off / file.size) * 100 : 100;
           setProgress('send', pct, file.name, pct.toFixed(0) + '% · ' + fmtSize(off));
         }
@@ -742,8 +745,23 @@ function sendRaw(dc, data) {
 }
 
 async function drain(dc) {
+  if (!dc || dc.readyState !== 'open') throw new Error('canal cerrado');
   let guard = 0;
-  while (dc.bufferedAmount > PIPE && guard++ < 5000) await sleep(5);
+  const max = 8000;
+  while (dc.bufferedAmount > PIPE && guard++ < max) {
+    if (!dc || dc.readyState !== 'open') throw new Error('canal cerrado');
+    await sleep(5);
+  }
+  if (dc.bufferedAmount > PIPE) {
+    if (chunkSize > MIN_CHUNK) {
+      chunkSize = Math.max(MIN_CHUNK, Math.floor(chunkSize / 2));
+    }
+    for (let i = 0; i < 200; i++) {
+      if (!dc || dc.readyState !== 'open') throw new Error('canal cerrado');
+      if (dc.bufferedAmount <= PIPE) break;
+      await sleep(10);
+    }
+  }
 }
 
 // Diagnóstico del estado real de la conexión ICE
