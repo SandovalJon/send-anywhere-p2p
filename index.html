@@ -668,6 +668,7 @@ async function streamTo(dc) {
           }
           off = end;
           try { await drain(dc); } catch (e) { throw e; }
+          await sleep(2); // dar tiempo al receptor en moviles
           const pct = file.size ? (off / file.size) * 100 : 100;
           setProgress('send', pct, file.name, pct.toFixed(0) + '% · ' + fmtSize(off));
         }
@@ -1016,6 +1017,7 @@ async function handleData(data, dc) {
   }
 
   addChunk(data);
+  await sleep(0);
 }
 
 // Si llega la cabecera pero no se recibe ningún dato, avisar en vez de quedarse al 0 %
@@ -1039,11 +1041,14 @@ function addChunk(data) {
     }).catch(() => { pendingBlobs--; });
   } else {
     pushChunk(data);
+    // ceder al event loop para que el navegador procese el siguiente mensaje
   }
 }
 
 function pushChunk(buf) {
   if (!current) return;
+  // ceder control al navegador para no bloquear el hilo principal en moviles
+  // (no-op sincrono; el await se hace en addChunk)
   current.chunks.push(buf);
   current.received += buf.byteLength;
   const pct = current.size ? (current.received / current.size) * 100 : 100;
