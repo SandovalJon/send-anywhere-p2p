@@ -656,6 +656,7 @@ async function streamTo(dc) {
           if (sendCancel) return;
           const _st = channelState.get(dc);
           if (_st && _st.closed) { throw new Error('canal cerrado (' + _st.reason + ')'); }
+          if (channelClosed(dc)) { throw new Error('canal cerrado (channelClosed)'); }
           const end = Math.min(off + chunkSize, file.size);
           const buf = await file.slice(off, end).arrayBuffer();
           try {
@@ -755,10 +756,28 @@ function trackChannel(dc) {
   channelState.set(dc, st);
   const setOpen = () => { st.open = true; st.closed = false; };
   const setClose = (reason) => { st.open = false; st.closed = true; st.reason = reason || 'desconocido'; };
-  if (dc.readyState === 'open') setOpen();
+  if (channelOpen(dc)) setOpen();
   dc.on('open', setOpen);
   dc.on('close', () => setClose('close-event'));
   dc.on('error', (e) => setClose('error: ' + (e && e.message ? e.message : e)));
+}
+// PeerJS DataConnection no expone readyState directamente; usamos dc.open
+// y, como respaldo, el readyState del RTCDataChannel subyacente.
+function channelOpen(dc) {
+  if (!dc) return false;
+  if (dc.open === true) return true;
+  const rtc = dc.dataChannel || dc._dc || (dc.peerConnection && null);
+  if (rtc && typeof rtc.readyState === 'string') return rtc.readyState === 'open';
+  return false;
+}
+function channelClosed(dc) {
+  if (!dc) return true;
+  const st = channelState.get(dc);
+  if (st && st.closed) return true;
+  if (dc.closed === true) return true;
+  const rtc = dc.dataChannel || dc._dc;
+  if (rtc && typeof rtc.readyState === 'string') return rtc.readyState === 'closed' || rtc.readyState === 'closing';
+  return false;
 }
 async function drain(dc) {
   trackChannel(dc);
@@ -772,20 +791,21 @@ async function drain(dc) {
     }
   }
   if (st.closed) throw new Error('canal cerrado (' + st.reason + ')');
-  if (dc.readyState !== 'open' && dc.readyState !== 'connecting') {
+  if (!channelOpen(dc) && !channelClosed(dc)) {
     await sleep(50);
-    if (dc.readyState !== 'open' && dc.readyState !== 'connecting') {
-      throw new Error('canal cerrado (readyState=' + dc.readyState + ')');
+    if (!channelOpen(dc) && !channelClosed(dc)) {
+      if (channelClosed(dc)) throw new Error('canal cerrado (cerrado)');
+      await sleep(50);
     }
   }
   let guard = 0;
   const max = 10000;
   while (dc.bufferedAmount > PIPE && guard++ < max) {
     if (st.closed) throw new Error('canal cerrado (' + st.reason + ')');
-    if (dc.readyState !== 'open' && dc.readyState !== 'connecting') {
+    if (!channelOpen(dc) && !channelClosed(dc)) {
       await sleep(50);
-      if (dc.readyState !== 'open' && dc.readyState !== 'connecting') {
-        throw new Error('canal cerrado (readyState=' + dc.readyState + ' mid-drain)');
+      if (!channelOpen(dc) && !channelClosed(dc)) {
+        if (channelClosed(dc)) throw new Error('canal cerrado (cerrado mid-drain)');
       }
     }
     await sleep(5);
