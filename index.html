@@ -448,6 +448,19 @@ let recvWatchdog = null;
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+let wakeLock = null;
+async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  } catch (e) { /* no soportado */ }
+}
+function releaseWakeLock() {
+  try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) {}
+}
+
 function fmtSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   const u = ['KB', 'MB', 'GB', 'TB'];
@@ -698,6 +711,7 @@ async function streamTo(dc) {
   } catch (err) {
     console.error('Error de envio:', err);
     setStatus($('sendStatus'), 'Error al enviar: ' + (err && err.message ? err.message : err) + ' [chunkSize=' + chunkSize + 'KB]', 'err');
+    releaseWakeLock();
   }
 }
 
@@ -956,6 +970,7 @@ $('recvCode').addEventListener('keydown', e => {
 
 function connectReceiver() {
   const code = $('recvCode').value.trim();
+  requestWakeLock();
   if (!/^\d{6}$/.test(code)) {
     setStatus($('recvStatus'), 'El código debe tener 6 dígitos', 'err');
     return;
@@ -1018,6 +1033,7 @@ async function handleData(data, dc) {
       finishCurrent();
     } else if (msg.type === 'done') {
       setStatus($('recvStatus'), 'Todos los archivos recibidos.', 'ok');
+      releaseWakeLock();
     }
     return;
   }
