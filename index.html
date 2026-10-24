@@ -392,6 +392,8 @@
 // se reduce el tamaño automaticamente (nunca baja de 16 KB).
 const MIN_CHUNK = 8 * 1024;
 let chunkSize = 32 * 1024;
+let lastAckReceived = 0;  // bytes confirmados por el receptor
+const ACK_WINDOW = 2 * 1024 * 1024; // 2 MB de ventana deslizante
 const PIPE = 256 * 1024;   // 256 KB en vuelo para mayor estabilidad en moviles
 
 // STUN + TURN: sin TURN los dispositivos detrás de NAT estricto
@@ -566,6 +568,7 @@ function genCode() {
 function startSending() {
   if (!selectedFiles.length) return;
   sendCancel = false;
+  lastAckReceived = 0;
 
   const newCode = genCode();
   setStatus($('sendStatus'), 'Conectando al servidor de señalización…', '');
@@ -598,6 +601,9 @@ function startSending() {
     streamTo(dc);
   };
     dc.on('open', begin);
+    dc.on('data', d => {
+      try { const m = JSON.parse(d); if (m.type === 'ack') lastAckReceived = Math.max(lastAckReceived, m.received || 0); } catch (e) {}
+    });
     watchIce(dc, () => {
       if (!started) {
         setStatus($('sendStatus'), 'No se pudo establecer la conexión directa. Prueba a estar en la misma red WiFi o regenera el código.', 'err');
@@ -1054,6 +1060,10 @@ function pushChunk(buf) {
   const pct = current.size ? (current.received / current.size) * 100 : 100;
   setProgress('recv', pct, current.name, pct.toFixed(0) + '% · ' + fmtSize(current.received));
   updateRecvProgressText();
+  // Enviar ACK al emisor cada ~1 MB para control de flujo
+  if (current.received % (1024*1024) < buf.byteLength || current.received >= current.size) {
+    try { dc.send(JSON.stringify({ type: 'ack', received: current.received })); } catch (e) {}
+  }
 }
 
 // Actualiza solo el texto, sin reconstruir la lista en cada bloque
