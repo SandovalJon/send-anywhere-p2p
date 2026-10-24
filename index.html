@@ -438,6 +438,7 @@ const receivers = new Set();
 
 let current = null;      // archivo en recepción
 let received = [];       // archivos completados
+let pendingBlobs = 0;     // chunks Blob pendientes de convertir
 let recvPeer = null;
 let recvWatchdog = null;
 
@@ -674,8 +675,19 @@ async function streamTo(dc) {
       await sendRaw(dc, JSON.stringify({ type: 'end' }));
     }
     await sendRaw(dc, JSON.stringify({ type: 'done' }));
+    setStatus($('sendStatus'), 'Esperando confirmacion del receptor...', 'wait');
+    await new Promise(res => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; dc.off('data', onData); res(); } };
+      function onData(d) {
+        try { const m = JSON.parse(d); if (m.type === 'done-ack') finish(); } catch (e) {}
+      }
+      dc.on('data', onData);
+      dc.on('close', finish);
+      setTimeout(finish, 10000);
+    });
     setStatus($('sendStatus'), 'Archivos enviados correctamente.', 'ok');
-    setTimeout(() => { try { dc.close(); } catch (e) {} }, 500);
+    setTimeout(() => { try { dc.close(); } catch (e) {} }, 1000);
   } catch (err) {
     console.error('Error de envio:', err);
     setStatus($('sendStatus'), 'Error al enviar: ' + (err && err.message ? err.message : err) + ' [chunkSize=' + chunkSize + 'KB]', 'err');
@@ -961,8 +973,11 @@ function connectReceiver() {
     dc.on('error', () => setStatus($('recvStatus'), 'No se pudo conectar con ese código', 'err'));
     dc.on('close', () => {
       if (ok) {
+        if (current) {
+          while (pendingBlobs > 0) { /* wait */ }
+          finishCurrent();
+        }
         setStatus($('recvStatus'), 'El emisor cerró la conexión.', 'ok');
-        finishCurrent();
       }
     });
     watchIce(dc, () => {
@@ -981,7 +996,7 @@ function connectReceiver() {
   });
 }
 
-function handleData(data, dc) {
+async function handleData(data, dc) {
   if (typeof data === 'string') {
     let msg;
     try { msg = JSON.parse(data); } catch (e) { return; }
@@ -1017,7 +1032,11 @@ function addChunk(data) {
   if (!current) return;
   // PeerJS puede entregar ArrayBuffer o Blob según la serialización
   if (data instanceof Blob) {
-    data.arrayBuffer().then(buf => pushChunk(buf));
+    pendingBlobs++;
+    data.arrayBuffer().then(buf => {
+      pushChunk(buf);
+      pendingBlobs--;
+    }).catch(() => { pendingBlobs--; });
   } else {
     pushChunk(data);
   }
