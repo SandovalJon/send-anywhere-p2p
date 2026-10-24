@@ -391,10 +391,10 @@
 // WebRTC tolera mensajes grandes entre navegadores directos; si un envio falla
 // se reduce el tamaño automaticamente (nunca baja de 16 KB).
 const MIN_CHUNK = 8 * 1024;
-let chunkSize = 64 * 1024;
+let chunkSize = 256 * 1024;
 let lastAckReceived = 0;  // bytes confirmados por el receptor
-const ACK_WINDOW = 2 * 1024 * 1024; // 2 MB de ventana deslizante
-const PIPE = 256 * 1024;   // 256 KB en vuelo para mayor estabilidad en moviles
+const ACK_WINDOW = 4 * 1024 * 1024; // 2 MB de ventana deslizante
+const PIPE = 1024 * 1024;   // 256 KB en vuelo para mayor estabilidad en moviles
 
 // STUN + TURN: sin TURN los dispositivos detrás de NAT estricto
 // (datos móviles, routers corporativos, AP isolation) no pueden conectarse.
@@ -1180,6 +1180,6 @@ if (urlCode && /^\d{6}$/.test(urlCode)) {
 }
 </script>
 
-<footer style="text-align:center;margin-top:32px;padding:12px;color:var(--muted);font-size:.78rem;">v1.3 - send-anywhere-p2p</footer>
+<footer style="text-align:center;margin-top:32px;padding:12px;color:var(--muted);font-size:.78rem;">v1.4 - send-anywhere-p2p</footer>
 </body>
 </html>
