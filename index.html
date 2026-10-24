@@ -390,9 +390,9 @@
 /* ---------- Estado ---------- */
 // WebRTC tolera mensajes grandes entre navegadores directos; si un envio falla
 // se reduce el tamaño automaticamente (nunca baja de 16 KB).
-const MIN_CHUNK = 16 * 1024;
-let chunkSize = 64 * 1024;
-const PIPE = 512 * 1024;   // 512 KB en vuelo para mayor estabilidad en móviles
+const MIN_CHUNK = 8 * 1024;
+let chunkSize = 32 * 1024;
+const PIPE = 256 * 1024;   // 256 KB en vuelo para mayor estabilidad en moviles
 
 // STUN + TURN: sin TURN los dispositivos detrás de NAT estricto
 // (datos móviles, routers corporativos, AP isolation) no pueden conectarse.
@@ -592,6 +592,8 @@ function startSending() {
     if (dc.bufferedAmountLowThreshold === undefined) {
       try { dc.bufferedAmountLowThreshold = 256 * 1024; } catch (e) {}
     }
+    trackChannel(dc);
+    trackChannel(dc);
     streamTo(dc);
   };
     dc.on('open', begin);
@@ -651,7 +653,9 @@ async function streamTo(dc) {
       } else {
         let off = 0;
         while (off < file.size) {
-          if (sendCancel || dc.closed) return;
+          if (sendCancel) return;
+          const _st = channelState.get(dc);
+          if (_st && _st.closed) { throw new Error('canal cerrado (' + _st.reason + ')'); }
           const end = Math.min(off + chunkSize, file.size);
           const buf = await file.slice(off, end).arrayBuffer();
           try {
@@ -673,7 +677,7 @@ async function streamTo(dc) {
     setTimeout(() => { try { dc.close(); } catch (e) {} }, 500);
   } catch (err) {
     console.error('Error de envio:', err);
-    setStatus($('sendStatus'), 'Error al enviar: ' + (err && err.message ? err.message : err), 'err');
+    setStatus($('sendStatus'), 'Error al enviar: ' + (err && err.message ? err.message : err) + ' [chunkSize=' + chunkSize + 'KB]', 'err');
   }
 }
 
@@ -743,22 +747,60 @@ function sendRaw(dc, data) {
   });
 }
 
+// Estado del canal rastreado por eventos (más fiable que readyState en móviles)
+const channelState = new WeakMap();
+function trackChannel(dc) {
+  if (channelState.has(dc)) return;
+  const st = { open: false, closed: false, reason: '' };
+  channelState.set(dc, st);
+  const setOpen = () => { st.open = true; st.closed = false; };
+  const setClose = (reason) => { st.open = false; st.closed = true; st.reason = reason || 'desconocido'; };
+  if (dc.readyState === 'open') setOpen();
+  dc.on('open', setOpen);
+  dc.on('close', () => setClose('close-event'));
+  dc.on('error', (e) => setClose('error: ' + (e && e.message ? e.message : e)));
+}
 async function drain(dc) {
-  if (!dc || dc.readyState !== 'open') throw new Error('canal cerrado');
+  trackChannel(dc);
+  const st = channelState.get(dc);
+  // Esperar a que el canal se abra si aún no lo está
+  if (!st.open && !st.closed) {
+    for (let k = 0; k < 100; k++) {
+      if (st.open) break;
+      if (st.closed) throw new Error('canal cerrado (' + st.reason + ')');
+      await sleep(10);
+    }
+  }
+  if (st.closed) throw new Error('canal cerrado (' + st.reason + ')');
+  if (dc.readyState !== 'open' && dc.readyState !== 'connecting') {
+    await sleep(50);
+    if (dc.readyState !== 'open' && dc.readyState !== 'connecting') {
+      throw new Error('canal cerrado (readyState=' + dc.readyState + ')');
+    }
+  }
   let guard = 0;
-  const max = 8000;
+  const max = 10000;
   while (dc.bufferedAmount > PIPE && guard++ < max) {
-    if (!dc || dc.readyState !== 'open') throw new Error('canal cerrado');
+    if (st.closed) throw new Error('canal cerrado (' + st.reason + ')');
+    if (dc.readyState !== 'open' && dc.readyState !== 'connecting') {
+      await sleep(50);
+      if (dc.readyState !== 'open' && dc.readyState !== 'connecting') {
+        throw new Error('canal cerrado (readyState=' + dc.readyState + ' mid-drain)');
+      }
+    }
     await sleep(5);
   }
   if (dc.bufferedAmount > PIPE) {
     if (chunkSize > MIN_CHUNK) {
       chunkSize = Math.max(MIN_CHUNK, Math.floor(chunkSize / 2));
     }
-    for (let i = 0; i < 200; i++) {
-      if (!dc || dc.readyState !== 'open') throw new Error('canal cerrado');
+    for (let k = 0; k < 500; k++) {
+      if (st.closed) throw new Error('canal cerrado (' + st.reason + ')');
       if (dc.bufferedAmount <= PIPE) break;
       await sleep(10);
+    }
+    if (dc.bufferedAmount > PIPE) {
+      throw new Error('canal saturado (bufferedAmount=' + dc.bufferedAmount + ')');
     }
   }
 }
@@ -893,6 +935,8 @@ function connectReceiver() {
       // Confirmación inmediata: desbloquea al emisor sin esperar a la cabecera
       try { dc.send(JSON.stringify({ type: 'ready' })); } catch (e) {}
     });
+    trackChannel(dc);
+    trackChannel(dc);
     dc.on('data', data => handleData(data, dc));
     dc.on('error', () => setStatus($('recvStatus'), 'No se pudo conectar con ese código', 'err'));
     dc.on('close', () => {
