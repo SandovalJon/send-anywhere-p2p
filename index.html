@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- v1.8: subida de carpetas completas (selector y arrastrar) conservando rutas -->
 <title>Send Anywhere - Comparte archivos</title>
 <meta name="description" content="Comparte archivos entre dispositivos con un código de 6 dígitos, por conexión directa P2P y sin registro.">
 <meta property="og:title" content="Send Anywhere">
@@ -336,9 +337,11 @@
     <div class="panel">
       <div class="dropzone" id="dropzone">
         <div class="icon">📁</div>
-        <p>Arrastra tus archivos aquí o <strong>haz clic para seleccionar</strong></p>
+        <p>Arrastra tus archivos o carpetas aquí o <strong>haz clic para seleccionar archivos</strong></p>
         <input type="file" id="fileInput" multiple>
+        <input type="file" id="folderInput" webkitdirectory>
       </div>
+      <button class="btn block" id="folderBtn" style="margin-top:10px">📂 Seleccionar carpeta completa</button>
 
       <div class="filelist" id="fileList"></div>
       <button class="btn primary block" id="generateBtn">Generar código de envío</button>
@@ -511,11 +514,56 @@ fileInput.addEventListener('change', e => addFiles(e.target.files));
 ['dragleave', 'drop'].forEach(ev => dropzone.addEventListener(ev, e => {
   e.preventDefault(); dropzone.classList.remove('dragover');
 }));
-dropzone.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+dropzone.addEventListener('drop', e => {
+  const items = e.dataTransfer.items;
+  const entries = [];
+  if (items && items.length && items[0].webkitGetAsEntry) {
+    for (const it of items) {
+      const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if (en) entries.push(en);
+    }
+  }
+  if (entries.length) {
+    collectDropped(entries).then(list => { if (list.length) addEntries(list); else addFiles(e.dataTransfer.files); });
+  } else {
+    addFiles(e.dataTransfer.files);
+  }
+});
+
+async function collectDropped(entries) {
+  const out = [];
+  const walk = async (entry, prefix) => {
+    if (!entry) return;
+    if (entry.isFile) {
+      const f = await new Promise(res => entry.file(res, () => res(null)));
+      if (f) out.push({ file: f, path: prefix + f.name });
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do {
+        batch = await new Promise(res => reader.readEntries(res, () => res([])));
+        for (const child of batch) await walk(child, prefix + entry.name + '/');
+      } while (batch && batch.length);
+    }
+  };
+  for (const en of entries) await walk(en, '');
+  return out;
+}
+
+function addEntries(list) {
+  for (const it of list) {
+    selectedFiles.push({ file: it.file, size: it.file.size, name: it.file.name, path: it.path || it.file.name });
+  }
+  renderFiles();
+}
+
+const folderInput = $('folderInput');
+$('folderBtn').addEventListener('click', () => folderInput.click());
+folderInput.addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
 
 function addFiles(files) {
   for (const f of files) {
-    selectedFiles.push({ file: f, size: f.size, name: f.name });
+    selectedFiles.push({ file: f, size: f.size, name: f.name, path: f.webkitRelativePath || f.name });
   }
   renderFiles();
 }
@@ -526,7 +574,7 @@ function renderFiles() {
   selectedFiles.forEach((f, i) => {
     const item = document.createElement('div');
     item.className = 'fileitem';
-    item.innerHTML = `<span class="name">${f.name}</span><span class="size">${fmtSize(f.size)}</span>`;
+    item.innerHTML = `<span class="name">${f.path || f.name}</span><span class="size">${fmtSize(f.size)}</span>`;
     const del = document.createElement('button');
     del.className = 'btn';
     del.style.padding = '6px 10px';
@@ -660,11 +708,12 @@ async function streamTo(dc) {
   if (sendCancel || dc.closed) return;
 
   try {
-    for (const { file } of selectedFiles) {
+    for (const entry of selectedFiles) {
+      const file = entry.file;
       if (sendCancel || dc.closed) return;
       const mime = file.type || 'application/octet-stream';
       const zip = shouldCompress(file);
-      await sendRaw(dc, JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime, compressed: zip }));
+      await sendRaw(dc, JSON.stringify({ type: 'meta', name: file.name, path: entry.path || file.name, size: file.size, mime, compressed: zip }));
       if (zip) {
         await sendCompressed(dc, file);
       } else {
@@ -1021,7 +1070,7 @@ async function handleData(data, dc) {
     try { msg = JSON.parse(data); } catch (e) { return; }
 
     if (msg.type === 'meta') {
-      current = { name: msg.name, mime: msg.mime, size: msg.size, chunks: [], received: 0, compressed: !!msg.compressed };
+      current = { name: msg.name, path: msg.path || msg.name, mime: msg.mime, size: msg.size, chunks: [], received: 0, compressed: !!msg.compressed };
       renderRecv();
       // Confirmación (por si el emisor aún no la recibió al abrir)
       try { dc.send(JSON.stringify({ type: 'ready' })); } catch (e) {}
@@ -1118,7 +1167,7 @@ function finishCurrent() {
 }
 
 function addReceived(cur, blob) {
-  received.push({ name: cur.name, size: blob.size, url: URL.createObjectURL(blob) });
+  received.push({ name: cur.name, path: cur.path || cur.name, size: blob.size, url: URL.createObjectURL(blob) });
   renderRecv();
 }
 
@@ -1130,7 +1179,7 @@ function renderRecv() {
     const pct = current.size ? (current.received / current.size) * 100 : 0;
     const item = document.createElement('div');
     item.className = 'recv-item';
-    item.innerHTML = `<div class="info"><div class="name">${current.name}</div>
+    item.innerHTML = `<div class="info"><div class="name">${current.path || current.name}</div>
       <div class="meta">Recibiendo… ${pct.toFixed(0)}% · ${fmtSize(current.received)} / ${fmtSize(current.size)}</div></div>`;
     list.appendChild(item);
   }
@@ -1145,7 +1194,7 @@ function renderRecv() {
     dl.textContent = '⬇ Guardar';
     const info = document.createElement('div');
     info.className = 'info';
-    info.innerHTML = `<div class="name">${f.name}</div><div class="meta">✓ Completo · ${fmtSize(f.size)}</div>`;
+    info.innerHTML = `<div class="name">${f.path || f.name}</div><div class="meta">✓ Completo · ${fmtSize(f.size)}</div>`;
     item.appendChild(info);
     item.appendChild(dl);
     list.appendChild(item);
@@ -1173,6 +1222,6 @@ if (urlCode && /^\d{6}$/.test(urlCode)) {
 }
 </script>
 
-<footer style="text-align:center;margin-top:32px;padding:12px;color:var(--muted);font-size:.78rem;">v1.7 - send-anywhere-p2p</footer>
+<footer style="text-align:center;margin-top:32px;padding:12px;color:var(--muted);font-size:.78rem;">v1.8 - send-anywhere-p2p</footer>
 </body>
 </html>
