@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<!-- v1.8: subida de carpetas completas (selector y arrastrar) conservando rutas -->
+<!-- v1.9: empaquetar la carpeta en un ZIP con su nombre (modo store) -->
 <title>Send Anywhere - Comparte archivos</title>
 <meta name="description" content="Comparte archivos entre dispositivos con un código de 6 dígitos, por conexión directa P2P y sin registro.">
 <meta property="og:title" content="Send Anywhere">
@@ -344,6 +344,7 @@
       <button class="btn block" id="folderBtn" style="margin-top:10px">📂 Seleccionar carpeta completa</button>
 
       <div class="filelist" id="fileList"></div>
+      <button class="btn block hidden" id="zipBtn" style="margin-bottom:10px">📦 Empaquetar la selección en un ZIP</button>
       <button class="btn primary block" id="generateBtn">Generar código de envío</button>
 
       <div class="codebox hidden" id="sendCodeBox">
@@ -583,11 +584,115 @@ function renderFiles() {
     item.appendChild(del);
     list.appendChild(item);
   });
+  const showZip = selectedFiles.length >= 2 || selectedFiles.some(f => (f.path || '').includes('/'));
+  $('zipBtn').classList.toggle('hidden', !showZip);
   $('generateBtn').disabled = selectedFiles.length === 0;
   $('generateBtn').textContent = sendCode
     ? 'Detener y generar otro código'
     : 'Generar código de envío';
 }
+
+/* ---------- Empaquetar en ZIP (modo store: los MP3 ya están comprimidos) ---------- */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+async function crc32Of(file) {
+  let crc = 0xFFFFFFFF;
+  const CH = 8 * 1024 * 1024;
+  for (let off = 0; off < file.size; off += CH) {
+    const buf = new Uint8Array(await file.slice(off, Math.min(off + CH, file.size)).arrayBuffer());
+    for (let i = 0; i < buf.length; i++) crc = CRC_TABLE[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function dosDateTime(d) {
+  const time = ((d.getHours() & 31) << 11) | ((d.getMinutes() & 63) << 5) | ((d.getSeconds() >> 1) & 31);
+  const date = (((Math.max(1980, d.getFullYear()) - 1980) & 127) << 9) | (((d.getMonth() + 1) & 15) << 5) | (d.getDate() & 31);
+  return { time, date };
+}
+
+async function buildStoreZip(entries, onProgress) {
+  if (entries.length > 65535) throw new Error('Demasiados archivos para un ZIP clásico (máx. 65535)');
+  const enc = new TextEncoder();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (let i = 0; i < entries.length; i++) {
+    const file = entries[i].file;
+    const path = entries[i].path || entries[i].name;
+    if (file.size > 0xFFFFFFFF) throw new Error('Un archivo supera los 4 GB del formato ZIP clásico');
+    const nameBytes = enc.encode(path);
+    const crc = await crc32Of(file);
+    const dt = dosDateTime(new Date(file.lastModified || Date.now()));
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true);
+    lh.setUint16(4, 20, true);
+    lh.setUint16(6, 0x0800, true);
+    lh.setUint16(8, 0, true);
+    lh.setUint16(10, dt.time, true);
+    lh.setUint16(12, dt.date, true);
+    lh.setUint32(14, crc, true);
+    lh.setUint32(18, file.size, true);
+    lh.setUint32(22, file.size, true);
+    lh.setUint16(26, nameBytes.length, true);
+    lh.setUint16(28, 0, true);
+    parts.push(new Uint8Array(lh.buffer), nameBytes, file);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true);
+    ch.setUint16(4, 20, true);
+    ch.setUint16(6, 20, true);
+    ch.setUint16(8, 0x0800, true);
+    ch.setUint16(10, 0, true);
+    ch.setUint16(12, dt.time, true);
+    ch.setUint16(14, dt.date, true);
+    ch.setUint32(16, crc, true);
+    ch.setUint32(20, file.size, true);
+    ch.setUint32(24, file.size, true);
+    ch.setUint16(28, nameBytes.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(new Uint8Array(ch.buffer), nameBytes);
+    offset += 30 + nameBytes.length + file.size;
+    if (onProgress) onProgress(i + 1, entries.length);
+  }
+  let centralSize = 0;
+  for (const c of central) centralSize += c.byteLength;
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, entries.length, true);
+  end.setUint16(10, entries.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
+}
+
+$('zipBtn').addEventListener('click', async () => {
+  if (!selectedFiles.length || sendCode) return;
+  const btn = $('zipBtn');
+  btn.disabled = true;
+  try {
+    const roots = new Set(selectedFiles.map(f => (f.path || f.name).split('/')[0]));
+    const singleFolder = selectedFiles.every(f => (f.path || f.name).includes('/')) && roots.size === 1;
+    const zipName = singleFolder ? [...roots][0] + '.zip' : 'archivos.zip';
+    setStatus($('sendStatus'), 'Empaquetando en ZIP…', 'wait');
+    const blob = await buildStoreZip(selectedFiles, (n, total) => setStatus($('sendStatus'), `Empaquetando en ZIP… ${n}/${total}`, 'wait'));
+    const zipFile = new File([blob], zipName, { type: 'application/zip' });
+    selectedFiles = [{ file: zipFile, size: zipFile.size, name: zipName, path: zipName }];
+    renderFiles();
+    setStatus($('sendStatus'), `ZIP listo: ${zipName} (${fmtSize(zipFile.size)}). Ya puedes generar el código.`, 'ok');
+  } catch (e) {
+    setStatus($('sendStatus'), 'No se pudo crear el ZIP: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $('generateBtn').addEventListener('click', () => {
   if (sendCode) { stopSending(); return; }
@@ -1222,6 +1327,6 @@ if (urlCode && /^\d{6}$/.test(urlCode)) {
 }
 </script>
 
-<footer style="text-align:center;margin-top:32px;padding:12px;color:var(--muted);font-size:.78rem;">v1.8 - send-anywhere-p2p</footer>
+<footer style="text-align:center;margin-top:32px;padding:12px;color:var(--muted);font-size:.78rem;">v1.9 - send-anywhere-p2p</footer>
 </body>
 </html>
